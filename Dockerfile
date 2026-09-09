@@ -36,10 +36,6 @@ COPY --from=builder /app/dist ./dist
 # Expose port 8080 (Cloud Run requirement)
 EXPOSE 8080
 
-# Health check - respects PORT env var
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT:-8080}/health || exit 1
-
 # Use dumb-init to handle signals properly
 ENTRYPOINT ["/sbin/dumb-init", "--"]
 
