@@ -4,23 +4,15 @@ import { HybridForexPredictor } from './inference';
 
 dotenv.config();
 
-// ============================================
-// GLOBAL ERROR HANDLERS (TOP PRIORITY)
-// ============================================
-
 process.on('uncaughtException', (error) => {
   console.error('UNCAUGHT EXCEPTION:', error);
   process.exit(1);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason) => {
   console.error('UNHANDLED REJECTION:', reason);
   process.exit(1);
 });
-
-// ============================================
-// STRUCTURED LOGGING
-// ============================================
 
 interface LogEntry {
   timestamp: string;
@@ -39,16 +31,13 @@ function log(level: 'INFO' | 'ERROR' | 'WARN' | 'DEBUG', message: string, detail
   console.log(JSON.stringify(entry));
 }
 
-// ============================================
-// MONITORING STATE
-// ============================================
-
 interface MonitoringState {
   isRunning: boolean;
   startedAt: string | null;
   predictionsCount: number;
   lastPredictionAt: string | null;
   lastAlert: any | null;
+  alerts: any[];
   lastError: string | null;
 }
 
@@ -58,27 +47,20 @@ const state: MonitoringState = {
   predictionsCount: 0,
   lastPredictionAt: null,
   lastAlert: null,
+  alerts: [],
   lastError: null
 };
 
 let monitoringInterval: NodeJS.Timeout | null = null;
 let predictor: HybridForexPredictor | null = null;
 
-// ============================================
-// EXPRESS SERVER SETUP
-// ============================================
-
 const app: Express = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
 app.use(express.json());
 
-// ============================================
-// HEALTH CHECK ENDPOINT (For Kubernetes & Cloud Run)
-// ============================================
-
 app.get('/health', (req: Request, res: Response) => {
-  const healthStatus = {
+  res.status(200).json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
@@ -94,75 +76,62 @@ app.get('/health', (req: Request, res: Response) => {
       hasOandaKey: !!process.env.OANDA_API_KEY,
       hasOandaId: !!process.env.OANDA_ACCOUNT_ID
     }
-  };
-
-  res.status(200).json(healthStatus);
-  log('DEBUG', 'Health check requested', { uptime: process.uptime() });
+  });
 });
 
-// ============================================
-// STATUS ENDPOINT
-// ============================================
-
 app.get('/status', (req: Request, res: Response) => {
-  const statusData = {
+  res.status(200).json({
     isRunning: state.isRunning,
     startedAt: state.startedAt,
     predictionsCount: state.predictionsCount,
     lastPredictionAt: state.lastPredictionAt,
     lastAlert: state.lastAlert,
+    alertCount: state.alerts.length,
     lastError: state.lastError,
     hasApiCredentials: !!(process.env.OANDA_API_KEY && process.env.OANDA_ACCOUNT_ID)
-  };
-
-  res.status(200).json(statusData);
-  log('DEBUG', 'Status requested');
+  });
 });
 
-// ============================================
-// START MONITORING ENDPOINT
-// ============================================
+app.get('/alerts', (req: Request, res: Response) => {
+  res.status(200).json({
+    count: state.alerts.length,
+    predictionsCount: state.predictionsCount,
+    alerts: state.alerts
+  });
+});
+
+async function startMonitoring(): Promise<void> {
+  if (state.isRunning) return;
+
+  if (!process.env.OANDA_API_KEY || !process.env.OANDA_ACCOUNT_ID) {
+    log('ERROR', 'Cannot start: missing OANDA credentials');
+    return;
+  }
+
+  predictor = new HybridForexPredictor();
+  state.isRunning = true;
+  state.startedAt = new Date().toISOString();
+  state.predictionsCount = 0;
+  state.lastError = null;
+
+  await runPrediction();
+  monitoringInterval = setInterval(runPrediction, 60000);
+
+  log('INFO', 'Monitoring started', { startedAt: state.startedAt });
+}
 
 app.post('/start', async (req: Request, res: Response) => {
   if (state.isRunning) {
-    log('WARN', 'Monitoring already running');
     return res.status(400).json({ error: 'Monitoring already running' });
   }
 
   try {
-    // Validate credentials
-    if (!process.env.OANDA_API_KEY || !process.env.OANDA_ACCOUNT_ID) {
-      log('ERROR', 'Missing OANDA credentials', {
-        hasKey: !!process.env.OANDA_API_KEY,
-        hasId: !!process.env.OANDA_ACCOUNT_ID
-      });
-      return res.status(400).json({ 
-        error: 'OANDA credentials not configured in environment variables' 
-      });
-    }
-
-    log('INFO', 'Starting Forex monitoring');
-
-    // Initialize predictor
-    predictor = new HybridForexPredictor();
-    state.isRunning = true;
-    state.startedAt = new Date().toISOString();
-    state.predictionsCount = 0;
-    state.lastError = null;
-
-    // Run prediction immediately
-    await runPrediction();
-
-    // Then every 60 seconds
-    monitoringInterval = setInterval(runPrediction, 60000);
-
+    await startMonitoring();
     res.status(200).json({
       message: 'Monitoring started successfully',
       startedAt: state.startedAt,
       status: 'RUNNING'
     });
-
-    log('INFO', 'Monitoring started', { startedAt: state.startedAt });
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     log('ERROR', 'Failed to start monitoring', { error: errorMsg });
@@ -171,40 +140,25 @@ app.post('/start', async (req: Request, res: Response) => {
   }
 });
 
-// ============================================
-// STOP MONITORING ENDPOINT
-// ============================================
-
 app.post('/stop', (req: Request, res: Response) => {
   if (!state.isRunning) {
-    log('WARN', 'Monitoring not running');
     return res.status(400).json({ error: 'Monitoring not running' });
   }
 
-  try {
-    if (monitoringInterval) {
-      clearInterval(monitoringInterval);
-      monitoringInterval = null;
-    }
-
-    state.isRunning = false;
-    log('INFO', 'Monitoring stopped');
-
-    res.status(200).json({
-      message: 'Monitoring stopped',
-      predictionsCount: state.predictionsCount,
-      status: 'STOPPED'
-    });
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    log('ERROR', 'Failed to stop monitoring', { error: errorMsg });
-    res.status(500).json({ error: 'Failed to stop monitoring' });
+  if (monitoringInterval) {
+    clearInterval(monitoringInterval);
+    monitoringInterval = null;
   }
-});
 
-// ============================================
-// PREDICTION LOGIC
-// ============================================
+  state.isRunning = false;
+  log('INFO', 'Monitoring stopped');
+
+  res.status(200).json({
+    message: 'Monitoring stopped',
+    predictionsCount: state.predictionsCount,
+    status: 'STOPPED'
+  });
+});
 
 async function runPrediction(): Promise<void> {
   try {
@@ -219,7 +173,6 @@ async function runPrediction(): Promise<void> {
     state.lastPredictionAt = new Date().toISOString();
     state.lastError = null;
 
-    // Log prediction details
     log('DEBUG', 'Prediction completed', {
       probability: (result.popProbability * 100).toFixed(2) + '%',
       predicted: result.popPredicted,
@@ -228,7 +181,6 @@ async function runPrediction(): Promise<void> {
       zone: result.marketStructure.priceZone
     });
 
-    // If alert triggered, log it prominently
     if (result.alert.shouldAlert) {
       state.lastAlert = {
         timestamp: new Date().toISOString(),
@@ -237,6 +189,9 @@ async function runPrediction(): Promise<void> {
         price: result.marketStructure.currentPrice,
         probability: result.popProbability
       };
+
+      state.alerts.unshift(state.lastAlert);
+      if (state.alerts.length > 100) state.alerts.pop();
 
       log('WARN', 'POP ALERT DETECTED', {
         message: result.alert.message,
@@ -256,23 +211,9 @@ async function runPrediction(): Promise<void> {
   }
 }
 
-// ============================================
-// ERROR HANDLING
-// ============================================
-
-app.use((err: any, req: Request, res: Response) => {
-  log('ERROR', 'Unhandled error', { error: String(err) });
-  res.status(500).json({ error: 'Internal server error' });
-});
-
 app.use((req: Request, res: Response) => {
-  log('WARN', 'Endpoint not found', { path: req.path, method: req.method });
   res.status(404).json({ error: 'Endpoint not found' });
 });
-
-// ============================================
-// GRACEFUL SHUTDOWN
-// ============================================
 
 function gracefulShutdown(signal: string): void {
   log('INFO', `Received ${signal}, shutting down gracefully`);
@@ -286,7 +227,6 @@ function gracefulShutdown(signal: string): void {
     process.exit(0);
   });
 
-  // Force exit after 10 seconds
   setTimeout(() => {
     log('ERROR', 'Forced shutdown after timeout');
     process.exit(1);
@@ -296,25 +236,18 @@ function gracefulShutdown(signal: string): void {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// ============================================
-// START SERVER
-// ============================================
-
-let server: any;
-
-try {
-  server = app.listen(PORT, () => {
-    log('INFO', `Server started on port ${PORT}`, {
-      environment: process.env.NODE_ENV || 'development',
-      hasOandaKey: !!process.env.OANDA_API_KEY,
-      hasOandaId: !!process.env.OANDA_ACCOUNT_ID,
-      endpoints: ['/health', '/status', '/start', '/stop']
-    });
+const server = app.listen(PORT, () => {
+  log('INFO', `Server started on port ${PORT}`, {
+    environment: process.env.NODE_ENV || 'development',
+    hasOandaKey: !!process.env.OANDA_API_KEY,
+    hasOandaId: !!process.env.OANDA_ACCOUNT_ID,
+    endpoints: ['/health', '/status', '/alerts', '/start', '/stop']
   });
-} catch (error) {
-  const errorMsg = error instanceof Error ? error.message : String(error);
-  log('ERROR', 'Failed to start server', { error: errorMsg });
-  process.exit(1);
-}
+
+  startMonitoring().catch((error) => {
+    log('ERROR', 'Auto-start failed', { error: String(error) });
+    state.lastError = String(error);
+  });
+});
 
 export default app;
