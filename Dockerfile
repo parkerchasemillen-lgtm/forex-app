@@ -33,15 +33,12 @@ RUN npm ci --only=production
 # Copy compiled code from builder
 COPY --from=builder /app/dist ./dist
 
-# Create .env placeholder (will be overridden at runtime)
-RUN echo "NODE_ENV=production" > .env
+# Expose port 8080 (Cloud Run requirement)
+EXPOSE 8080
 
-# Expose port
-EXPOSE 3000
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+# Health check - respects PORT env var
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT:-8080}/health || exit 1
 
 # Use dumb-init to handle signals properly
 ENTRYPOINT ["/sbin/dumb-init", "--"]
