@@ -1,0 +1,31 @@
+{
+  "name": "forex-hybrid-model",
+  "version": "1.0.0",
+  "description": "Forex market structure analyzer with pop detection",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "watch": "tsc --watch"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.14.0",
+    "@types/node": "^20.10.5",
+    "axios": "^1.6.2",
+    "cors": "^2.8.6",
+    "dotenv": "^16.3.1",
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3",
+    "electron-squirrel-startup": "^1.0.1",
+    "express": "^4.22.2",
+    "helmet": "^8.3.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.2",
+    "@electron-forge/maker-squirrel": "^7.11.2",
+    "nodemon": "^3.0.2"
+  }
+}
