@@ -5,6 +5,20 @@ import { HybridForexPredictor } from './inference';
 dotenv.config();
 
 // ============================================
+// GLOBAL ERROR HANDLERS (TOP PRIORITY)
+// ============================================
+
+process.on('uncaughtException', (error) => {
+  console.error('UNCAUGHT EXCEPTION:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('UNHANDLED REJECTION:', reason);
+  process.exit(1);
+});
+
+// ============================================
 // STRUCTURED LOGGING
 // ============================================
 
@@ -55,12 +69,12 @@ let predictor: HybridForexPredictor | null = null;
 // ============================================
 
 const app: Express = express();
-const PORT = process.env.PORT || 3000;
+const PORT = parseInt(process.env.PORT || '3000', 10);
 
 app.use(express.json());
 
 // ============================================
-// HEALTH CHECK ENDPOINT (For Kubernetes)
+// HEALTH CHECK ENDPOINT (For Kubernetes & Cloud Run)
 // ============================================
 
 app.get('/health', (req: Request, res: Response) => {
@@ -123,7 +137,7 @@ app.post('/start', async (req: Request, res: Response) => {
         hasId: !!process.env.OANDA_ACCOUNT_ID
       });
       return res.status(400).json({ 
-        error: 'OANDA credentials not configured in .env file' 
+        error: 'OANDA credentials not configured in environment variables' 
       });
     }
 
@@ -286,13 +300,21 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // START SERVER
 // ============================================
 
-const server = app.listen(PORT, () => {
-  log('INFO', `Server started on port ${PORT}`, {
-    environment: process.env.NODE_ENV || 'development',
-    hasOandaKey: !!process.env.OANDA_API_KEY,
-    hasOandaId: !!process.env.OANDA_ACCOUNT_ID,
-    endpoints: ['/health', '/status', '/start', '/stop']
+let server: any;
+
+try {
+  server = app.listen(PORT, () => {
+    log('INFO', `Server started on port ${PORT}`, {
+      environment: process.env.NODE_ENV || 'development',
+      hasOandaKey: !!process.env.OANDA_API_KEY,
+      hasOandaId: !!process.env.OANDA_ACCOUNT_ID,
+      endpoints: ['/health', '/status', '/start', '/stop']
+    });
   });
-});
+} catch (error) {
+  const errorMsg = error instanceof Error ? error.message : String(error);
+  log('ERROR', 'Failed to start server', { error: errorMsg });
+  process.exit(1);
+}
 
 export default app;
